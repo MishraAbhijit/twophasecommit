@@ -38,6 +38,8 @@ public class InventoryServiceImpl implements InventoryService {
 
             if(optionalInventoryItem.isPresent()){
                 if(optionalInventoryItem.get().getQuantity() >= orderRequest.getQuantity()){
+                    optionalInventoryItem.get().setQuantity(optionalInventoryItem.get().getQuantity()-orderRequest.getQuantity());
+                    log.info("Inventory updated");
                     InventoryLog inventoryLog = new InventoryLog(++counter,orderRequest.getTransactionId(),orderRequest.getProductId(),orderRequest.getQuantity(), Status.PREPARE);
                     inventoryLogs.add(inventoryLog);
                     log.info("Inventory log updated with status PREPARE for transactionId: {}",orderRequest.getTransactionId());
@@ -53,28 +55,14 @@ public class InventoryServiceImpl implements InventoryService {
     @Override
     public void commitInventory(OrderRequest orderRequest) {
         synchronized (this){
-            Optional<InventoryItem> optionalInventoryItem = inventory.stream()
-                    .filter(inventoryItem -> inventoryItem.getProductId() == orderRequest.getProductId())
-                    .findFirst();
-
-            if(optionalInventoryItem.isPresent()){
-                if(optionalInventoryItem.get().getQuantity() >= orderRequest.getQuantity()){
-                    optionalInventoryItem.get().setQuantity(optionalInventoryItem.get().getQuantity()-orderRequest.getQuantity());
-                    log.info("Inventory updated");
-                    Optional<InventoryLog> inventoryLogOptional = inventoryLogs.stream()
-                            .filter(inventoryLog -> inventoryLog.getTransactionId() == orderRequest.getTransactionId())
-                            .findAny();
-                    if(inventoryLogOptional.isPresent()){
-                        inventoryLogOptional.get().setStatus(Status.COMMIT);
-                        log.info("Inventory log updated with status COMMIT for transactionId: {}",orderRequest.getTransactionId());
-                    }else {
-                        throw new RuntimeException("Invalid transactionId");
-                    }
-                }else{
-                    throw new RuntimeException("Insufficient Amount");
-                }
+            Optional<InventoryLog> inventoryLogOptional = inventoryLogs.stream()
+                    .filter(inventoryLog -> inventoryLog.getTransactionId() == orderRequest.getTransactionId())
+                    .findAny();
+            if(inventoryLogOptional.isPresent()){
+                inventoryLogOptional.get().setStatus(Status.COMMIT);
+                log.info("Inventory log updated with status COMMIT for transactionId: {}",orderRequest.getTransactionId());
             }else {
-                throw new RuntimeException("Item doesn't exist");
+                throw new RuntimeException("Invalid transactionId");
             }
         }
     }
@@ -87,6 +75,11 @@ public class InventoryServiceImpl implements InventoryService {
         if(inventoryLogOptional.isPresent()){
             inventoryLogOptional.get().setStatus(Status.ROLLBACK);
             log.info("Inventory log updated with status ROLLBACK for transactionId: {}",orderRequest.getTransactionId());
+            Optional<InventoryItem> optionalInventoryItem = inventory.stream()
+                    .filter(inventoryItem -> inventoryItem.getProductId() == orderRequest.getProductId())
+                    .findFirst();
+            optionalInventoryItem.ifPresent(inventoryItem -> inventoryItem.setQuantity(inventoryItem.getQuantity()+orderRequest.getQuantity()));
+            log.info("Inventory updated for product id : {}",orderRequest.getProductId());
         }else {
             throw new RuntimeException("Invalid transactionId");
         }
