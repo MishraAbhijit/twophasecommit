@@ -1,4 +1,4 @@
-package com.abhijit.inventoryservice.dto;
+package com.abhijit.paymentservice.dto;
 
 import lombok.Data;
 
