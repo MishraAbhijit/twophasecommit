@@ -1,54 +1,68 @@
 package com.abhijit.transactioncoordinator.service.impl;
 
+import com.abhijit.transactioncoordinator.config.clients.BaseClient;
 import com.abhijit.transactioncoordinator.dto.OrderRequest;
 import com.abhijit.transactioncoordinator.service.TransactionService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 @Service
 public class TransactionServiceImpl implements TransactionService {
 
-    private final RestTemplate restTemplate;
-
-    public TransactionServiceImpl(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
-    }
+    @Autowired
+    private List<BaseClient> participants;
 
     @Override
-    public ResponseEntity<String> paceOrder(OrderRequest orderRequest) {
+    public ResponseEntity<String> placeOrder(OrderRequest orderRequest) {
+        AtomicInteger counter = new AtomicInteger(1);
+        orderRequest.setTransactionId(counter.getAndIncrement());
 
-        int transactionId = UUID.randomUUID().clockSequence();
-        orderRequest.setTransactionId(transactionId);
+        log.info("Initiating transaction with ID: {}", orderRequest.getTransactionId());
+
+        // Keep track of participants that successfully PREPARE
+        List<BaseClient> successfulPrepares = new ArrayList<>();
 
         try {
-            log.info("initiating transaction with id : {}", transactionId);
-
-            //Phase 1: Initializing Transaction - Prepare Phase
-            ResponseEntity<String> inventoryPrep = restTemplate.postForEntity("http://localhost:8082/inventory/prepare", orderRequest, String.class);
-            ResponseEntity<String> paymentPrep = restTemplate.postForEntity("http://localhost:8083/payment/prepare", orderRequest, String.class);
-            ResponseEntity<String> orderPrep = restTemplate.postForEntity("http://localhost:8084/order/prepare", orderRequest, String.class);
-
-            if (inventoryPrep.getStatusCode().is2xxSuccessful() && paymentPrep.getStatusCode().is2xxSuccessful() && orderPrep.getStatusCode().is2xxSuccessful()) {
-                // Phase 2: Commit Phase
-                restTemplate.postForEntity("http://localhost:8082/inventory/commit", orderRequest, String.class);
-                restTemplate.postForEntity("http://localhost:8083/payment/commit", orderRequest, String.class);
-                restTemplate.postForEntity("http://localhost:8084/order/commit", orderRequest, String.class);
-                return ResponseEntity.ok("Transaction committed successfully");
-            } else {
-                throw new IllegalStateException("Prepare phase failed... ");
+            // Phase 1: Prepare
+            for (BaseClient client : participants) {
+                if (client.prepare(orderRequest)) {
+                    successfulPrepares.add(client);
+                } else {
+                    throw new IllegalStateException("Prepare phase failed for: " + client.getClass().getSimpleName());
+                }
             }
-        } catch (Exception exception) {
-            // Phase 3: Rollback Phase
-            restTemplate.postForEntity("http://localhost:8082/inventory/rollback", orderRequest, String.class);
-            restTemplate.postForEntity("http://localhost:8083/payment/rollback", orderRequest, String.class);
-            restTemplate.postForEntity("http://localhost:8084/order/rollback", orderRequest, String.class);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Transaction rolled back due to failure");
+
+            // Phase 2: Commit
+            for (BaseClient client : successfulPrepares) {
+                client.commit(orderRequest);
+            }
+
+            return ResponseEntity.ok("Transaction committed successfully");
+
+        } catch (Exception e) {
+            log.error("Transaction failed. Rolling back. Reason: {}", e.getMessage());
+
+            // Phase 3: Rollback only successful prepares
+            for (BaseClient client : successfulPrepares) {
+                try {
+                    client.rollback(orderRequest);
+                } catch (Exception rollbackEx) {
+                    log.warn("Rollback failed for {}: {}", client.getClass().getSimpleName(), rollbackEx.getMessage());
+                }
+            }
+
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Transaction rolled back due to failure: " + e.getMessage());
         }
     }
 }

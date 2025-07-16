@@ -18,7 +18,7 @@ public class TransactionCoordinatorController {
 
     @PostMapping("/place-order")
     public ResponseEntity<String> placeOrder(@RequestBody OrderRequest orderRequest) {
-       return transactionService.paceOrder(orderRequest);
+       return transactionService.placeOrder(orderRequest);
     }
 }
 

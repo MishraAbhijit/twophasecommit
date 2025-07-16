@@ -28,7 +28,7 @@ public class PaymentServiceImpl implements PaymentService {
                     .productId(orderRequest.getProductId())
                     .quantity(orderRequest.getQuantity())
                     .amount(orderRequest.getAmount())
-                    .paymentStatus(PaymentStatus.SUCCESSFUL)
+                    .paymentStatus(PaymentStatus.CAPTURED)
                     .status(Status.PREPARED)
                     .build();
 
@@ -41,12 +41,19 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     public void commitPayment(OrderRequest orderRequest) {
         Optional<PaymentLog> optionalPaymentLog = paymentLogs.stream().filter(paymentLog -> paymentLog.getTransactionId() == orderRequest.getTransactionId()).findAny();
-        optionalPaymentLog.ifPresent(paymentLog -> paymentLog.setStatus(Status.COMMITTED));
+        optionalPaymentLog.ifPresent(paymentLog -> {
+            paymentLog.setPaymentStatus(PaymentStatus.SUCCESSFUL);
+            paymentLog.setStatus(Status.COMMITTED);
+        });
+        log.info("Payment is committed....");
     }
 
     @Override
     public void rollbackPayment(OrderRequest orderRequest) {
         Optional<PaymentLog> optionalPaymentLog = paymentLogs.stream().filter(paymentLog -> paymentLog.getTransactionId() == orderRequest.getTransactionId()).findAny();
-        optionalPaymentLog.ifPresent(paymentLog -> paymentLog.setStatus(Status.ROLLBACK));
+        optionalPaymentLog.ifPresent(paymentLog -> {
+            paymentLog.setPaymentStatus(PaymentStatus.FAILED);
+            paymentLog.setStatus(Status.ROLLBACK);
+        });log.info("Payment is rolled back....");
     }
 }

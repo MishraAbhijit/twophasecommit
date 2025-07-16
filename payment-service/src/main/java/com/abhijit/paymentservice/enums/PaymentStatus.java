@@ -1,5 +1,5 @@
 package com.abhijit.paymentservice.enums;
 
 public enum PaymentStatus {
-    SUCCESSFUL,FAILED
+    CAPTURED,SUCCESSFUL,FAILED
 }
