@@ -1,10 +1,8 @@
 package com.abhijit.transactioncoordinator.config.clients;
 
-import com.abhijit.transactioncoordinator.config.apis.ServiceConfig;
 import com.abhijit.transactioncoordinator.config.apis.ServiceConfigFactory;
 import com.abhijit.transactioncoordinator.dto.OrderRequest;
-import com.abhijit.transactioncoordinator.enums.TransactionPhase;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.abhijit.transactioncoordinator.enums.Status;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -19,16 +17,16 @@ public class InventoryServiceClient extends ApiClient implements BaseClient {
 
     @Override
     public boolean prepare(OrderRequest orderRequest) {
-        return call(TransactionPhase.PREPARE,orderRequest);
+        return call(Status.PREPARE,orderRequest);
     }
 
     @Override
     public boolean commit(OrderRequest orderRequest) {
-        return call(TransactionPhase.COMMIT,orderRequest);
+        return call(Status.COMMIT,orderRequest);
     }
 
     @Override
     public boolean rollback(OrderRequest orderRequest) {
-        return call(TransactionPhase.ROLLBACK,orderRequest);
+        return call(Status.ROLLBACK,orderRequest);
     }
 }

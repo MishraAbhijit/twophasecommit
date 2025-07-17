@@ -1,68 +1,118 @@
 package com.abhijit.transactioncoordinator.service.impl;
 
 import com.abhijit.transactioncoordinator.config.clients.BaseClient;
+import com.abhijit.transactioncoordinator.domain.TransactionLog;
 import com.abhijit.transactioncoordinator.dto.OrderRequest;
+import com.abhijit.transactioncoordinator.enums.Status;
+import com.abhijit.transactioncoordinator.repository.TransactionLogRepository;
 import com.abhijit.transactioncoordinator.service.TransactionService;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
-@Slf4j
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class TransactionServiceImpl implements TransactionService {
 
-    @Autowired
-    private List<BaseClient> participants;
+    private final List<BaseClient> participants;
+    private final TransactionLogRepository logRepository;
+    private final AtomicInteger transactionIdGenerator = new AtomicInteger(1);
 
     @Override
+    @Transactional
     public ResponseEntity<String> placeOrder(OrderRequest orderRequest) {
-        AtomicInteger counter = new AtomicInteger(1);
-        orderRequest.setTransactionId(counter.getAndIncrement());
+        int txnId = transactionIdGenerator.getAndIncrement();
+        orderRequest.setTransactionId(txnId);
+        log.info("Starting transaction ID: {}", txnId);
 
-        log.info("Initiating transaction with ID: {}", orderRequest.getTransactionId());
-
-        // Keep track of participants that successfully PREPARE
-        List<BaseClient> successfulPrepares = new ArrayList<>();
+        List<BaseClient> preparedParticipants = new ArrayList<>();
 
         try {
-            // Phase 1: Prepare
-            for (BaseClient client : participants) {
-                if (client.prepare(orderRequest)) {
-                    successfulPrepares.add(client);
+            // PHASE 1: PREPARE
+            for (BaseClient participant : participants) {
+                String participantName = participant.getClass().getSimpleName();
+
+                // Check if already PREPARED
+                if (logRepository.findByTransactionIdAndParticipant(txnId, participantName)
+                        .map(log -> log.getStatus() == Status.PREPARE).orElse(false)) {
+                    log.info("Already PREPARED: {}", participantName);
+                    preparedParticipants.add(participant);
+                    continue;
+                }
+
+                if (participant.prepare(orderRequest)) {
+                    preparedParticipants.add(participant);
+                    persistLog(txnId, participantName, Status.PREPARE);
+                    log.info("Prepared: {}", participantName);
                 } else {
-                    throw new IllegalStateException("Prepare phase failed for: " + client.getClass().getSimpleName());
+                    throw new IllegalStateException("PREPARE failed for " + participantName);
                 }
             }
 
-            // Phase 2: Commit
-            for (BaseClient client : successfulPrepares) {
-                client.commit(orderRequest);
+            // PHASE 2: COMMIT
+            for (BaseClient participant : preparedParticipants) {
+                String participantName = participant.getClass().getSimpleName();
+
+                if (logRepository.findByTransactionIdAndParticipant(txnId, participantName)
+                        .map(log -> log.getStatus() == Status.COMMIT).orElse(false)) {
+                    log.info("Already COMMITTED: {}", participantName);
+                    continue;
+                }
+
+                participant.commit(orderRequest);
+                persistLog(txnId, participantName, Status.COMMIT);
+                log.info("Committed: {}", participantName);
             }
 
             return ResponseEntity.ok("Transaction committed successfully");
 
-        } catch (Exception e) {
-            log.error("Transaction failed. Rolling back. Reason: {}", e.getMessage());
+        } catch (Exception ex) {
+            log.error("Transaction FAILED. Starting rollback. Reason: {}", ex.getMessage());
 
-            // Phase 3: Rollback only successful prepares
-            for (BaseClient client : successfulPrepares) {
+            // ROLLBACK already prepared
+            for (BaseClient participant : preparedParticipants) {
+                String participantName = participant.getClass().getSimpleName();
+
+                if (logRepository.findByTransactionIdAndParticipant(txnId, participantName)
+                        .map(log -> log.getStatus() == Status.ROLLBACK).orElse(false)) {
+                    log.info("Already rolled back: {}", participantName);
+                    continue;
+                }
+
                 try {
-                    client.rollback(orderRequest);
-                } catch (Exception rollbackEx) {
-                    log.warn("Rollback failed for {}: {}", client.getClass().getSimpleName(), rollbackEx.getMessage());
+                    participant.rollback(orderRequest);
+                    persistLog(txnId, participantName, Status.ROLLBACK);
+                    log.info("Rolled back: {}", participantName);
+                } catch (Exception e) {
+                    log.warn("Rollback failed for {}: {}", participantName, e.getMessage());
                 }
             }
 
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Transaction rolled back due to failure: " + e.getMessage());
+                    .body("Transaction rolled back. Reason: " + ex.getMessage());
         }
+    }
+
+    private void persistLog(int txnId, String participant, Status status) {
+        TransactionLog logEntry = TransactionLog.builder()
+                .transactionId(txnId)
+                .participant(participant)
+                .status(status)
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        logRepository.save(logEntry);
     }
 }

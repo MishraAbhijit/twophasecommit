@@ -1,5 +1,5 @@
 package com.abhijit.transactioncoordinator.enums;
 
-public enum TransactionPhase {
+public enum Status {
     PREPARE,COMMIT,ROLLBACK
 }

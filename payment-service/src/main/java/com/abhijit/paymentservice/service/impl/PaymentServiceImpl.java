@@ -4,56 +4,85 @@ import com.abhijit.paymentservice.domain.PaymentLog;
 import com.abhijit.paymentservice.dto.OrderRequest;
 import com.abhijit.paymentservice.enums.PaymentStatus;
 import com.abhijit.paymentservice.enums.Status;
+import com.abhijit.paymentservice.repository.PaymentLogRepository;
 import com.abhijit.paymentservice.service.PaymentService;
+import jakarta.transaction.Transactional;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
-
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class PaymentServiceImpl implements PaymentService {
 
-    private final List<PaymentLog> paymentLogs = Collections.synchronizedList(new ArrayList<>());
-    private int counter = 0;
+    private final PaymentLogRepository paymentLogRepository;
 
     @Override
+    @Transactional
     public void preparePayment(OrderRequest orderRequest) {
-        Optional<PaymentLog> optionalPaymentLog = paymentLogs.stream().filter(paymentLog -> paymentLog.getTransactionId() == orderRequest.getTransactionId()).findAny();
+        paymentLogRepository.findByTransactionId(orderRequest.getTransactionId())
+                .ifPresentOrElse(existing -> {
+                    if (existing.getStatus() == Status.PREPARED) {
+                        log.info("Idempotent PREPARE detected for Txn {}", orderRequest.getTransactionId());
+                    } else {
+                        log.warn("Invalid state PREPARE attempted for Txn {}. State: {}", orderRequest.getTransactionId(), existing.getStatus());
+                    }
+                }, () -> {
+                    PaymentLog logEntry = PaymentLog.builder()
+                            .transactionId(orderRequest.getTransactionId())
+                            .productId(orderRequest.getProductId())
+                            .quantity(orderRequest.getQuantity())
+                            .amount(orderRequest.getAmount())
+                            .paymentStatus(PaymentStatus.CAPTURED)
+                            .status(Status.PREPARED)
+                            .build();
+                    paymentLogRepository.save(logEntry);
+                    log.info("PREPARE phase done for Txn {}", orderRequest.getTransactionId());
+                });
+    }
 
-        if(optionalPaymentLog.isEmpty()){
-            PaymentLog paymentLog = PaymentLog.builder()
-                    .id(++counter)
-                    .transactionId(orderRequest.getTransactionId())
-                    .productId(orderRequest.getProductId())
-                    .quantity(orderRequest.getQuantity())
-                    .amount(orderRequest.getAmount())
-                    .paymentStatus(PaymentStatus.CAPTURED)
-                    .status(Status.PREPARED)
-                    .build();
+    @Override
+    @Transactional
+    public void commitPayment(OrderRequest orderRequest) {
+        PaymentLog paymentLog = paymentLogRepository.findByTransactionId(orderRequest.getTransactionId())
+                .orElseThrow(() -> new RuntimeException("No prepared payment found for Txn: " + orderRequest.getTransactionId()));
 
-            paymentLogs.add(paymentLog);
-            log.info("Payment in prepared state");
+        if (paymentLog.getStatus() == Status.COMMITTED) {
+            log.info("Idempotent COMMIT for Txn {}", orderRequest.getTransactionId());
+            return;
         }
 
+        if (paymentLog.getStatus() != Status.PREPARED) {
+            log.warn("Invalid COMMIT. Txn {} is in state: {}", orderRequest.getTransactionId(), paymentLog.getStatus());
+            return;
+        }
+
+        paymentLog.setPaymentStatus(PaymentStatus.SUCCESSFUL);
+        paymentLog.setStatus(Status.COMMITTED);
+        paymentLogRepository.save(paymentLog);
+        log.info("COMMIT phase done for Txn {}", orderRequest.getTransactionId());
     }
 
     @Override
-    public void commitPayment(OrderRequest orderRequest) {
-        Optional<PaymentLog> optionalPaymentLog = paymentLogs.stream().filter(paymentLog -> paymentLog.getTransactionId() == orderRequest.getTransactionId()).findAny();
-        optionalPaymentLog.ifPresent(paymentLog -> {
-            paymentLog.setPaymentStatus(PaymentStatus.SUCCESSFUL);
-            paymentLog.setStatus(Status.COMMITTED);
-        });
-        log.info("Payment is committed....");
-    }
-
-    @Override
+    @Transactional
     public void rollbackPayment(OrderRequest orderRequest) {
-        Optional<PaymentLog> optionalPaymentLog = paymentLogs.stream().filter(paymentLog -> paymentLog.getTransactionId() == orderRequest.getTransactionId()).findAny();
-        optionalPaymentLog.ifPresent(paymentLog -> {
-            paymentLog.setPaymentStatus(PaymentStatus.FAILED);
-            paymentLog.setStatus(Status.ROLLBACK);
-        });log.info("Payment is rolled back....");
+        PaymentLog paymentLog = paymentLogRepository.findByTransactionId(orderRequest.getTransactionId())
+                .orElseThrow(() -> new RuntimeException("No prepared payment found for Txn: " + orderRequest.getTransactionId()));
+
+        if (paymentLog.getStatus() == Status.ROLLBACK) {
+            log.info("Idempotent ROLLBACK for Txn {}", orderRequest.getTransactionId());
+            return;
+        }
+
+        if (paymentLog.getStatus() != Status.PREPARED) {
+            log.warn("Invalid ROLLBACK. Txn {} is in state: {}", orderRequest.getTransactionId(), paymentLog.getStatus());
+            return;
+        }
+
+        paymentLog.setPaymentStatus(PaymentStatus.FAILED);
+        paymentLog.setStatus(Status.ROLLBACK);
+        paymentLogRepository.save(paymentLog);
+        log.info("ROLLBACK phase done for Txn {}", orderRequest.getTransactionId());
     }
 }

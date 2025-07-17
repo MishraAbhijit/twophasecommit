@@ -4,10 +4,12 @@ import com.abhijit.inventoryservice.domain.InventoryItem;
 import com.abhijit.inventoryservice.domain.InventoryLog;
 import com.abhijit.inventoryservice.dto.OrderRequest;
 import com.abhijit.inventoryservice.enums.Status;
+import com.abhijit.inventoryservice.repository.InventoryLogRepository;
 import com.abhijit.inventoryservice.service.InventoryService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,8 +20,11 @@ import java.util.Optional;
 @Slf4j
 public class InventoryServiceImpl implements InventoryService {
     private final List<InventoryItem> inventory = Collections.synchronizedList(new ArrayList<>());
-    private final List<InventoryLog> inventoryLogs = Collections.synchronizedList(new ArrayList<>());
-    private int counter = 0;
+    private final InventoryLogRepository logRepository;
+
+    public InventoryServiceImpl(InventoryLogRepository inventoryLogRepository) {
+        this.logRepository = inventoryLogRepository;
+    }
 
     @PostConstruct
     void setup(){
@@ -30,58 +35,76 @@ public class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    @Transactional
     public void prepareInventory(OrderRequest orderRequest) {
-        synchronized (this){
-            Optional<InventoryItem> optionalInventoryItem = inventory.stream()
-                    .filter(inventoryItem -> inventoryItem.getProductId() == orderRequest.getProductId())
-                    .findFirst();
-
-            if(optionalInventoryItem.isPresent()){
-                if(optionalInventoryItem.get().getQuantity() >= orderRequest.getQuantity()){
-                    optionalInventoryItem.get().setQuantity(optionalInventoryItem.get().getQuantity()-orderRequest.getQuantity());
-                    log.info("Inventory updated");
-                    InventoryLog inventoryLog = new InventoryLog(++counter,orderRequest.getTransactionId(),orderRequest.getProductId(),orderRequest.getQuantity(), Status.PREPARE);
-                    inventoryLogs.add(inventoryLog);
-                    log.info("Inventory log updated with status PREPARE for transactionId: {}",orderRequest.getTransactionId());
-                }else{
-                    throw new RuntimeException("Insufficient Amount");
-                }
-            }else {
-                throw new RuntimeException("Item doesn't exist");
+        Optional<InventoryLog> existing = logRepository.findByTransactionId(orderRequest.getTransactionId());
+        if (existing.isPresent()) {
+            if (existing.get().getStatus() == Status.PREPARE) {
+                log.info("Transaction {} already prepared.", orderRequest.getTransactionId());
+                return; // Idempotent check
+            } else {
+                throw new IllegalStateException("Transaction already in "+existing.get().getStatus()+" state");
             }
         }
+
+        InventoryItem item = inventory.stream()
+                .filter(i -> i.getProductId() == orderRequest.getProductId())
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Item not found"));
+
+        if (item.getQuantity() < orderRequest.getQuantity())
+            throw new RuntimeException("Insufficient stock");
+
+        item.setQuantity(item.getQuantity() - orderRequest.getQuantity());
+
+        InventoryLog logEntry = new InventoryLog(
+                orderRequest.getTransactionId(),
+                orderRequest.getProductId(),
+                orderRequest.getQuantity(),
+                Status.PREPARE);
+
+        logRepository.save(logEntry);
+        log.info("Prepared inventory for txId {}", orderRequest.getTransactionId());
     }
 
     @Override
+    @Transactional
     public void commitInventory(OrderRequest orderRequest) {
-        synchronized (this){
-            Optional<InventoryLog> inventoryLogOptional = inventoryLogs.stream()
-                    .filter(inventoryLog -> inventoryLog.getTransactionId() == orderRequest.getTransactionId())
-                    .findAny();
-            if(inventoryLogOptional.isPresent()){
-                inventoryLogOptional.get().setStatus(Status.COMMIT);
-                log.info("Inventory log updated with status COMMIT for transactionId: {}",orderRequest.getTransactionId());
-            }else {
-                throw new RuntimeException("Invalid transactionId");
-            }
+        InventoryLog inventoryLog = logRepository.findByTransactionId(orderRequest.getTransactionId())
+                .orElseThrow(() -> new RuntimeException("Transaction not found"));
+
+        if (inventoryLog.getStatus() == Status.COMMIT) {
+            log.info("Transaction {} already committed.", orderRequest.getTransactionId());
+            return;
         }
+        if (inventoryLog.getStatus() != Status.PREPARE)
+            throw new IllegalStateException("Transaction is not in PREPARE phase");
+
+        inventoryLog.setStatus(Status.COMMIT);
+        logRepository.save(inventoryLog);
+        log.info("Commit inventory for txId {}", orderRequest.getTransactionId());
     }
 
     @Override
+    @Transactional
     public void rollbackInventory(OrderRequest orderRequest) {
-        Optional<InventoryLog> inventoryLogOptional = inventoryLogs.stream()
-                .filter(inventoryLog -> inventoryLog.getTransactionId() == orderRequest.getTransactionId())
-                .findAny();
-        if(inventoryLogOptional.isPresent()){
-            inventoryLogOptional.get().setStatus(Status.ROLLBACK);
-            log.info("Inventory log updated with status ROLLBACK for transactionId: {}",orderRequest.getTransactionId());
-            Optional<InventoryItem> optionalInventoryItem = inventory.stream()
-                    .filter(inventoryItem -> inventoryItem.getProductId() == orderRequest.getProductId())
-                    .findFirst();
-            optionalInventoryItem.ifPresent(inventoryItem -> inventoryItem.setQuantity(inventoryItem.getQuantity()+orderRequest.getQuantity()));
-            log.info("Inventory updated for product id : {}",orderRequest.getProductId());
-        }else {
-            throw new RuntimeException("Invalid transactionId");
+        InventoryLog inventoryLog = logRepository.findByTransactionId(orderRequest.getTransactionId())
+                .orElseThrow(() -> new RuntimeException("Transaction not found"));
+
+        if (inventoryLog.getStatus() == Status.ROLLBACK) {
+            log.info("Transaction {} already rolled back.", orderRequest.getTransactionId());
+            return;
         }
+
+        InventoryItem item = inventory.stream()
+                .filter(i -> i.getProductId() == orderRequest.getProductId())
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Inventory item not found"));
+
+        item.setQuantity(item.getQuantity() + inventoryLog.getQuantity());
+        inventoryLog.setStatus(Status.ROLLBACK);
+        logRepository.save(inventoryLog);
+        log.info("Rollback inventory for txId {}", orderRequest.getTransactionId());
     }
+
 }

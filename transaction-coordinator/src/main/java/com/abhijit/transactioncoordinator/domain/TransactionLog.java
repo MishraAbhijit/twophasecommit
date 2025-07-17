@@ -1,31 +1,32 @@
-package com.abhijit.orderservice.domain;
+package com.abhijit.transactioncoordinator.domain;
 
-import com.abhijit.orderservice.enums.Status;
+import com.abhijit.transactioncoordinator.enums.Status;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "order_logs")
+@Table(name = "transaction_logs")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class OrderLog {
+public class TransactionLog {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private int id;
-    private int transactionId;
-    private int productId;
-    private int quantity;
-    private BigDecimal amount;
+    private Long id;
+
+    private Integer transactionId;
+
+    private String participant; // e.g., "OrderService", "PaymentService"
+
     @Enumerated(EnumType.STRING)
     private Status status;
-    private LocalDateTime createdAt = LocalDateTime.now();
+
+    private LocalDateTime timestamp;
 }
