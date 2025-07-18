@@ -18,6 +18,7 @@ import org.springframework.web.client.RestTemplate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,7 +32,6 @@ public class TransactionServiceImpl implements TransactionService {
     private final AtomicInteger transactionIdGenerator = new AtomicInteger(1);
 
     @Override
-    @Transactional
     public ResponseEntity<String> placeOrder(OrderRequest orderRequest) {
         int txnId = transactionIdGenerator.getAndIncrement();
         orderRequest.setTransactionId(txnId);
@@ -44,13 +44,6 @@ public class TransactionServiceImpl implements TransactionService {
             for (BaseClient participant : participants) {
                 String participantName = participant.getClass().getSimpleName();
 
-                // Check if already PREPARED
-                if (logRepository.findByTransactionIdAndParticipant(txnId, participantName)
-                        .map(log -> log.getStatus() == Status.PREPARE).orElse(false)) {
-                    log.info("Already PREPARED: {}", participantName);
-                    preparedParticipants.add(participant);
-                    continue;
-                }
 
                 if (participant.prepare(orderRequest)) {
                     preparedParticipants.add(participant);
@@ -60,7 +53,8 @@ public class TransactionServiceImpl implements TransactionService {
                     throw new IllegalStateException("PREPARE failed for " + participantName);
                 }
             }
-
+            log.info("All prepared.....");
+            Thread.sleep(400000);
             // PHASE 2: COMMIT
             for (BaseClient participant : preparedParticipants) {
                 String participantName = participant.getClass().getSimpleName();
@@ -106,13 +100,23 @@ public class TransactionServiceImpl implements TransactionService {
     }
 
     private void persistLog(int txnId, String participant, Status status) {
-        TransactionLog logEntry = TransactionLog.builder()
-                .transactionId(txnId)
-                .participant(participant)
-                .status(status)
-                .timestamp(LocalDateTime.now())
-                .build();
+        Optional<TransactionLog> byTransactionIdAndParticipant = logRepository.findByTransactionIdAndParticipant(txnId, participant);
 
-        logRepository.save(logEntry);
+
+        if(byTransactionIdAndParticipant.isPresent())
+        {
+            byTransactionIdAndParticipant.get().setStatus(status);
+            logRepository.save(byTransactionIdAndParticipant.get());
+        }else {
+            TransactionLog logEntry = TransactionLog.builder()
+                    .transactionId(txnId)
+                    .participant(participant)
+                    .status(status)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+
+            logRepository.save(logEntry);
+        }
+
     }
 }
